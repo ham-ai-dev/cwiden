@@ -48,11 +48,13 @@ public:
     /** Update center frequency (e.g. after SDR retune). */
     void set_center_freq(double freq_hz) { center_freq_ = freq_hz; }
 
+    /** Extract a single narrowband channel at the given frequency. */
+    void extract_channel(const std::complex<float>* samples, int count,
+                         double target_freq_hz, DetectedChannel& out);
+
 private:
     void compute_psd(const std::complex<float>* samples, int count);
     std::vector<int> detect_peaks();
-    void extract_channel(const std::complex<float>* samples, int count,
-                         double target_freq_hz, DetectedChannel& out);
 
     // FIR lowpass filter design
     void design_lpf(int num_taps, float cutoff);

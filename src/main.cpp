@@ -47,6 +47,10 @@ struct CachedChannel {
 };
 static std::vector<CachedChannel> g_cached_channels;
 
+// Raw IQ buffer for scan mode (extract any frequency on demand)
+static std::mutex g_raw_iq_mutex;
+static std::vector<std::complex<float>> g_raw_iq_buffer;
+
 static void print_usage(const char* prog) {
     std::cerr << "Usage: " << prog << " [options]\n\n"
               << "SDR options:\n"
@@ -386,6 +390,52 @@ int main(int argc, char** argv) {
                     }
                 }
             });
+
+            // Scan mode: extract and play any frequency from raw IQ
+            Tui::set_scan_play_callback([&](double freq_hz) {
+                std::vector<std::complex<float>> raw_copy;
+                {
+                    std::lock_guard<std::mutex> lock(g_raw_iq_mutex);
+                    raw_copy = g_raw_iq_buffer;
+                }
+                if (raw_copy.empty()) return;
+
+                DetectedChannel ch;
+                channelizer.extract_channel(raw_copy.data(),
+                                             static_cast<int>(raw_copy.size()),
+                                             freq_hz, ch);
+                if (ch.iq.empty()) return;
+
+                // Play the audio
+                audio.play(ch.iq, ch.bandwidth_hz);
+
+                // Also classify and log for training data
+                if (logging) {
+                    auto result = classifier.classify(ch.iq.data(),
+                                                       static_cast<int>(ch.iq.size()),
+                                                       ch.bandwidth_hz);
+                    auto now = std::chrono::steady_clock::now();
+                    double elapsed = static_cast<double>(std::time(nullptr));
+
+                    FeatureRow row;
+                    row.timestamp = elapsed;
+                    row.freq_hz = freq_hz;
+                    row.snr_db = 0;  // unknown for scan
+                    row.effective_bw = result.features.effective_bw;
+                    row.shape_factor = result.features.shape_factor;
+                    row.headroom_db = result.features.headroom_db;
+                    row.bimodality_coeff = result.features.bimodality_coeff;
+                    row.on_off_ratio = result.features.on_off_ratio;
+                    row.rhythm_score = result.features.rhythm_score;
+                    row.wpm_estimate = result.wpm_estimate;
+                    row.spectral_entropy = result.features.spectral_entropy;
+                    row.peak_stability = result.features.peak_stability;
+                    row.confidence = result.cw_confidence;
+                    row.classified_cw = result.is_cw;
+                    row.stage_reached = result.stage_reached;
+                    feature_log.log(row);
+                }
+            });
         }
 
         Tui::set_config_change_callback([&](const std::string& key, const std::string& val) {
@@ -442,6 +492,13 @@ int main(int argc, char** argv) {
 
                 auto now = std::chrono::steady_clock::now();
                 double elapsed = std::chrono::duration<double>(now - start_time).count();
+
+                // Save raw IQ for scan mode extraction
+                if (validate_mode) {
+                    std::lock_guard<std::mutex> lock(g_raw_iq_mutex);
+                    g_raw_iq_buffer.assign(accumulator.begin(),
+                                            accumulator.begin() + chunk_size);
+                }
 
                 // Cache channel IQ for audio playback in validate mode
                 if (validate_mode) {

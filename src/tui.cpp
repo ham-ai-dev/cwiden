@@ -53,6 +53,14 @@ std::vector<Tui::DeviceInfo> Tui::audio_devices_;
 int                         Tui::selected_device_ = 0;
 int                         Tui::focus_panel_ = 1; // start on bands
 
+// Scan mode
+bool                        Tui::scan_mode_ = false;
+double                      Tui::scan_freq_ = 7030000;
+double                      Tui::scan_step_ = 200;     // 200 Hz steps
+Tui::ScanPlayCallback       Tui::scan_play_cb_;
+int                         Tui::scan_labels_cw_ = 0;
+int                         Tui::scan_labels_noise_ = 0;
+
 static std::string format_freq(double hz) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%.3f", hz / 1000.0);
@@ -116,6 +124,7 @@ void Tui::set_audio_select_callback(AudioSelectCallback cb) { audio_select_cb_ =
 void Tui::set_device_switch_callback(DeviceSwitchCallback cb) { device_switch_cb_ = cb; }
 void Tui::set_test_tone_callback(TestToneCallback cb) { test_tone_cb_ = cb; }
 void Tui::set_validation_mode(bool enabled) { validation_mode_ = enabled; }
+void Tui::set_scan_play_callback(ScanPlayCallback cb) { scan_play_cb_ = cb; }
 void Tui::set_audio_devices(const std::vector<DeviceInfo>& devices) {
     std::lock_guard<std::mutex> lock(mutex_);
     audio_devices_ = devices;
@@ -253,10 +262,63 @@ void Tui::run() {
             band_label = " CW Signals ";
         }
 
-        auto signal_panel = window(
-            text(band_label) | bold | color(Color::Cyan),
-            vbox(std::move(rows)) | flex
-        ) | flex;
+        Element signal_panel;
+        if (scan_mode_) {
+            // === Scan mode: manual frequency dial ===
+            char scan_buf[32];
+            snprintf(scan_buf, sizeof(scan_buf), "%.3f kHz", scan_freq_ / 1000.0);
+            char step_buf[16];
+            if (scan_step_ >= 1000) snprintf(step_buf, sizeof(step_buf), "%.0f kHz", scan_step_ / 1000.0);
+            else snprintf(step_buf, sizeof(step_buf), "%.0f Hz", scan_step_);
+
+            // Show scan cursor position on a freq scale
+            double band_lo = cw_filter_lo_;
+            double band_hi = cw_filter_hi_;
+            double band_span = band_hi - band_lo;
+            int dial_width = 50;
+            int cursor_pos = (band_span > 0)
+                ? std::clamp(static_cast<int>((scan_freq_ - band_lo) / band_span * dial_width), 0, dial_width - 1)
+                : dial_width / 2;
+
+            std::string dial_line(dial_width, '-');
+            if (cursor_pos >= 0 && cursor_pos < dial_width) dial_line[cursor_pos] = '|';
+
+            auto scan_rows = vbox({
+                text("") | size(HEIGHT, EQUAL, 1),
+                text("  Frequency Dial") | bold | color(Color::Cyan) | center,
+                text("") | size(HEIGHT, EQUAL, 1),
+                text("  " + std::string(scan_buf)) | bold | color(Color::White) | center,
+                text("") | size(HEIGHT, EQUAL, 1),
+                text("  [" + dial_line + "]") | color(Color::Green) | center,
+                hbox({
+                    text("  " + format_freq(band_lo) + " kHz") | dim,
+                    filler(),
+                    text(format_freq(band_hi) + " kHz  ") | dim,
+                }),
+                text("") | size(HEIGHT, EQUAL, 1),
+                text("  Step: " + std::string(step_buf)) | dim | center,
+                text("  +/- to change step size") | dim | center,
+                text("") | size(HEIGHT, EQUAL, 1),
+                hbox({
+                    text("  Labels: "),
+                    text("+" + std::to_string(scan_labels_cw_)) | color(Color::Green),
+                    text(" / "),
+                    text("-" + std::to_string(scan_labels_noise_)) | color(Color::Red),
+                }) | center,
+            });
+
+            signal_panel = window(
+                text(" SCAN MODE ") | bold | color(Color::Yellow),
+                scan_rows | flex
+            ) | flex;
+        } else {
+            // === Normal signal list ===
+            auto signal_panel_inner = window(
+                text(band_label) | bold | color(Color::Cyan),
+                vbox(std::move(rows)) | flex
+            ) | flex;
+            signal_panel = signal_panel_inner;
+        }
 
         // === Mini spectrum bar ===
         Element spectrum_el;
@@ -376,14 +438,15 @@ void Tui::run() {
                     text(" Enter Select") | bold,
                     validation_mode_
                         ? vbox({
-                            text(" Space Listen") | bold,
+                            text(" F    Scan mode") | bold | color(scan_mode_ ? Color::Yellow : Color::White),
+                            text(scan_mode_ ? " </>  Tune freq" : " Space Listen") | bold,
                             text(" Y/N  Label") | bold,
                             text(" T    Test tone") | dim,
                             hbox({
                                 text(" +") | color(Color::Green),
-                                text(std::to_string(labels_positive_)),
+                                text(std::to_string(labels_positive_ + scan_labels_cw_)),
                                 text(" -") | color(Color::Red),
-                                text(std::to_string(labels_negative_)),
+                                text(std::to_string(labels_negative_ + scan_labels_noise_)),
                             }),
                         })
                         : text("") | nothing,
@@ -452,6 +515,23 @@ void Tui::run() {
             return true;
         }
 
+        // Toggle scan mode
+        if (validation_mode_ &&
+            (event == Event::Character('f') || event == Event::Character('F'))) {
+            scan_mode_ = !scan_mode_;
+            if (scan_mode_) {
+                // Initialize scan freq to band center
+                if (selected_band_ >= 0 && selected_band_ < static_cast<int>(bands_.size())) {
+                    scan_freq_ = bands_[selected_band_].cw_lo_hz;
+                }
+                focus_panel_ = 0;  // focus on scan
+                status_msg_ = "SCAN: \u2190/\u2192 to tune, Space to play, Y/N to label";
+            } else {
+                status_msg_ = "Scan mode off";
+            }
+            return true;
+        }
+
         // Test tone
         if (validation_mode_ &&
             (event == Event::Character('t') || event == Event::Character('T'))) {
@@ -464,16 +544,78 @@ void Tui::run() {
 
         // Navigation
         if (event == Event::ArrowUp || event == Event::Character('k')) {
-            if (focus_panel_ == 0 && selected_signal_ > 0) selected_signal_--;
+            if (focus_panel_ == 0 && !scan_mode_ && selected_signal_ > 0) selected_signal_--;
             else if (focus_panel_ == 1 && selected_band_ > 0) selected_band_--;
             else if (focus_panel_ == 2 && selected_device_ > 0) selected_device_--;
             return true;
         }
         if (event == Event::ArrowDown || event == Event::Character('j')) {
-            if (focus_panel_ == 0 && selected_signal_ < vis_count - 1) selected_signal_++;
+            if (focus_panel_ == 0 && !scan_mode_ && selected_signal_ < vis_count - 1) selected_signal_++;
             else if (focus_panel_ == 1 && selected_band_ < band_count - 1) selected_band_++;
             else if (focus_panel_ == 2 && selected_device_ < dev_count - 1) selected_device_++;
             return true;
+        }
+
+        // Scan mode: left/right tuning
+        if (scan_mode_ && focus_panel_ == 0) {
+            if (event == Event::ArrowLeft || event == Event::Character('h')) {
+                scan_freq_ -= scan_step_;
+                if (scan_freq_ < cw_filter_lo_) scan_freq_ = cw_filter_lo_;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "Tune: %.3f kHz", scan_freq_ / 1000.0);
+                status_msg_ = buf;
+                return true;
+            }
+            if (event == Event::ArrowRight || event == Event::Character('l')) {
+                scan_freq_ += scan_step_;
+                if (scan_freq_ > cw_filter_hi_) scan_freq_ = cw_filter_hi_;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "Tune: %.3f kHz", scan_freq_ / 1000.0);
+                status_msg_ = buf;
+                return true;
+            }
+            // +/- to change step size
+            if (event == Event::Character('+') || event == Event::Character('=')) {
+                if (scan_step_ < 10000) scan_step_ *= 2;
+                return true;
+            }
+            if (event == Event::Character('-') || event == Event::Character('_')) {
+                if (scan_step_ > 50) scan_step_ /= 2;
+                return true;
+            }
+            // Space: play audio at scan frequency
+            if (event == Event::Character(' ')) {
+                if (scan_play_cb_) {
+                    scan_play_cb_(scan_freq_);
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "Playing: %.3f kHz", scan_freq_ / 1000.0);
+                    status_msg_ = buf;
+                }
+                return true;
+            }
+            // Y/N: label scan frequency
+            if (event == Event::Character('y') || event == Event::Character('Y')) {
+                if (validation_cb_) validation_cb_(scan_freq_, 1);
+                scan_labels_cw_++;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "CW: %.3f kHz", scan_freq_ / 1000.0);
+                status_msg_ = buf;
+                // Auto-advance to next frequency
+                scan_freq_ += scan_step_;
+                if (scan_freq_ > cw_filter_hi_) scan_freq_ = cw_filter_hi_;
+                return true;
+            }
+            if (event == Event::Character('n') || event == Event::Character('N')) {
+                if (validation_cb_) validation_cb_(scan_freq_, 0);
+                scan_labels_noise_++;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "NOT CW: %.3f kHz", scan_freq_ / 1000.0);
+                status_msg_ = buf;
+                // Auto-advance to next frequency
+                scan_freq_ += scan_step_;
+                if (scan_freq_ > cw_filter_hi_) scan_freq_ = cw_filter_hi_;
+                return true;
+            }
         }
 
         // Enter/Space: select

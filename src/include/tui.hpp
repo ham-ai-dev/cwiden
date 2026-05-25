@@ -67,6 +67,10 @@ public:
     static void set_test_tone_callback(TestToneCallback cb);
     static void set_validation_mode(bool enabled);
 
+    // Scan mode: manual frequency tuning
+    using ScanPlayCallback = std::function<void(double freq_hz)>;
+    static void set_scan_play_callback(ScanPlayCallback cb);
+
     // Audio device list
     struct DeviceInfo {
         std::string name;
@@ -121,6 +125,14 @@ private:
     static std::vector<DeviceInfo>     audio_devices_;
     static int                         selected_device_;
 
-    // Focus: 0=signals, 1=bands, 2=audio devices
+    // Focus: 0=signals/scan, 1=bands, 2=audio devices
     static int                         focus_panel_;
+
+    // Scan mode
+    static bool                        scan_mode_;        // toggle with 'F'
+    static double                      scan_freq_;        // current dial frequency
+    static double                      scan_step_;        // Hz per arrow press
+    static ScanPlayCallback            scan_play_cb_;
+    static int                         scan_labels_cw_;
+    static int                         scan_labels_noise_;
 };
