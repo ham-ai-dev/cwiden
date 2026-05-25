@@ -118,17 +118,26 @@ std::vector<int> Channelizer::detect_peaks() {
 
     float threshold = noise_floor + min_snr_db_;
 
+    // Interpolate over DC spike (±2 bins) so we don't miss near-center signals
+    int half = fft_size_ / 2;
+    int dc_exclude = 2;
+    if (half - dc_exclude - 1 >= 0 && half + dc_exclude + 1 < fft_size_) {
+        float left  = psd_db_[half - dc_exclude - 1];
+        float right = psd_db_[half + dc_exclude + 1];
+        for (int i = half - dc_exclude; i <= half + dc_exclude; i++) {
+            float t = static_cast<float>(i - (half - dc_exclude)) / (2 * dc_exclude);
+            float interp = left * (1.0f - t) + right * t;
+            // Only replace if the DC spike is artificially high
+            if (psd_db_[i] > interp + 6.0f) {
+                psd_db_[i] = interp;
+            }
+        }
+    }
+
     // Find bins above threshold
     std::vector<int> peak_bins;
-    int half = fft_size_ / 2;
-
-    // Skip DC region (±5 bins around center)
-    int dc_exclude = 5;
 
     for (int i = 0; i < fft_size_; i++) {
-        // Skip DC spike region
-        if (std::abs(i - half) < dc_exclude) continue;
-
         if (psd_db_[i] > threshold) {
             // Check if local maximum (higher than neighbors)
             bool is_peak = true;
@@ -150,7 +159,6 @@ std::vector<int> Channelizer::detect_peaks() {
         if (merged.empty() || peak_bins[i] - merged.back() > merge_bins_) {
             merged.push_back(peak_bins[i]);
         } else {
-            // Keep the stronger one
             if (psd_db_[peak_bins[i]] > psd_db_[merged.back()]) {
                 merged.back() = peak_bins[i];
             }
