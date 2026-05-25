@@ -484,6 +484,7 @@ void Tui::run() {
                     auto& b = bands_[selected_band_];
                     cw_filter_lo_ = b.cw_lo_hz;
                     cw_filter_hi_ = b.cw_hi_hz;
+                    sdr_freq_ = b.center_hz;  // update display directly
                     if (band_change_cb_) band_change_cb_(selected_band_);
                     status_msg_ = b.name + " band selected";
                 }

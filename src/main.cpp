@@ -320,7 +320,7 @@ int main(int argc, char** argv) {
         Tui::set_initial_config(center_freq, lna_gain, vga_gain, start_band);
         Tui::update_sdr_info("HackRF", center_freq, sample_rate, true);
 
-        // Band change callback — retunes HackRF
+        // Band change callback — retunes HackRF (called from TUI with mutex held)
         Tui::set_band_change_callback([&](int band_idx) {
             auto presets = get_band_presets();
             if (band_idx >= 0 && band_idx < static_cast<int>(presets.size())) {
@@ -328,7 +328,8 @@ int main(int argc, char** argv) {
                 hackrf.set_frequency(bp.center_hz);
                 channelizer.set_center_freq(bp.center_hz);
                 center_freq = bp.center_hz;
-                Tui::update_sdr_info("HackRF", center_freq, sample_rate, true);
+                // Don't call Tui::update_sdr_info here — mutex is already held
+                // The TUI updates sdr_freq_ directly in the band switch handler
             }
         });
 
