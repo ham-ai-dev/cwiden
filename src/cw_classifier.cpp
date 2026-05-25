@@ -314,14 +314,14 @@ ClassifyResult CWClassifier::stage2_amplitude(const std::complex<float>* iq,
         verdict << " CARRIER";
         return {SignalType::CARRIER, 0.0f, 2, 0.0f, false, verdict.str()};
     }
-    if (bc < 0.3f) {
+    if (bc < 0.20f) {
         verdict << " NOT_CW (BC low)";
         return {SignalType::NOISE, 0.0f, 2, 0.0f, false, verdict.str()};
     }
 
-    // CW pass
-    bool pass_bc = bc > 0.40f;
-    bool pass_on_off = on_off >= 0.15f && on_off <= 0.85f;
+    // CW pass — relaxed for real-world HF fading
+    bool pass_bc = bc > 0.30f;
+    bool pass_on_off = on_off >= 0.10f && on_off <= 0.90f;
 
     ClassifyFeatures s2f;
     s2f.bimodality_coeff = bc;
@@ -331,8 +331,9 @@ ClassifyResult CWClassifier::stage2_amplitude(const std::complex<float>* iq,
         verdict << " PASS";
         return {SignalType::UNKNOWN, 0.6f, 2, 0.0f, true, verdict.str(), s2f};
     } else {
-        verdict << " FAIL";
-        return {SignalType::UNKNOWN, 0.0f, 2, 0.0f, false, verdict.str(), s2f};
+        // Don't hard-reject — pass with low confidence so Stage 3 can try
+        verdict << " WEAK";
+        return {SignalType::UNKNOWN, 0.3f, 2, 0.0f, true, verdict.str(), s2f};
     }
 }
 
@@ -644,6 +645,10 @@ ClassifyResult CWClassifier::stage3_rhythm(const std::complex<float>* iq,
     if (cw_score > threshold) {
         verdict << " PASS";
         return {SignalType::CW, 0.7f, 3, wpm_est, true, verdict.str(), s3f};
+    } else if (cw_score > threshold * 0.5f) {
+        // Close enough — mark as possible CW with reduced confidence
+        verdict << " MARGINAL";
+        return {SignalType::CW, cw_score / threshold * 0.5f, 3, wpm_est, true, verdict.str(), s3f};
     } else {
         verdict << " FAIL";
         return {SignalType::UNKNOWN, cw_score / threshold * 0.3f, 3, wpm_est, false, verdict.str(), s3f};

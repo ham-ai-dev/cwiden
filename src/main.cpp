@@ -467,7 +467,7 @@ int main(int argc, char** argv) {
                         feature_log.log(row);
                     }
 
-                    if (result.is_cw || result.cw_confidence > 0.3f) {
+                    if (result.is_cw || result.cw_confidence > 0.15f) {
                         detections.emplace_back(ch.center_freq_hz, ch.snr_db,
                                                  result.wpm_estimate, result.cw_confidence);
                     }
