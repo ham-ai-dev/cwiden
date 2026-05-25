@@ -1,18 +1,22 @@
 #pragma once
 /**
- * cw_classifier.hpp — 3-stage CW identification cascade.
+ * cw_classifier.hpp — CW identification with optional ML model.
  *
- * Stage 1: Spectral Shape — bandwidth, shape factor, two-tone detection
- * Stage 2: Amplitude Pattern — bimodality coefficient, on/off ratio
- * Stage 3: Temporal Rhythm — autocorrelation periodicity, WPM estimate
+ * When no ML model is loaded, uses a 3-stage DSP cascade:
+ *   Stage 1: Spectral Shape — bandwidth, shape factor, two-tone detection
+ *   Stage 2: Amplitude Pattern — bimodality coefficient, on/off ratio
+ *   Stage 3: Temporal Rhythm — autocorrelation periodicity, WPM estimate
  *
- * Ported from deepspan's Python/CuPy classifiers to pure C++ with FFTW.
+ * When an ML model is loaded (model.json), uses gradient-boosted tree
+ * inference on the same feature vector for more accurate classification.
  */
 
 #include <complex>
 #include <vector>
 #include <string>
 #include <fftw3.h>
+
+class MLClassifier;  // forward decl
 
 enum class SignalType {
     CW,
@@ -33,6 +37,9 @@ struct ClassifyFeatures {
     float on_off_ratio = 0.0f;
     // Stage 3
     float rhythm_score = 0.0f;
+    // Additional ML features
+    float spectral_entropy = 0.0f;
+    float peak_stability = 0.0f;
 };
 
 struct ClassifyResult {
@@ -51,14 +58,22 @@ public:
     ~CWClassifier();
 
     /**
-     * Run the full 3-stage cascade on narrowband baseband IQ.
-     *
-     * @param iq        Complex baseband samples (center ≈ 0 Hz)
-     * @param count     Number of samples
-     * @param sample_rate  Sample rate of the baseband (e.g. 500 Hz)
-     * @return Classification result
+     * Attach an ML model for classification. When set, classify() uses
+     * the ML model instead of hardcoded thresholds.
+     */
+    void set_ml_model(MLClassifier* model) { ml_model_ = model; }
+
+    /**
+     * Run classification on narrowband baseband IQ.
+     * Uses ML model if available, otherwise DSP cascade.
      */
     ClassifyResult classify(const std::complex<float>* iq, int count, float sample_rate);
+
+    /**
+     * Extract all features without classifying (for ML training).
+     * Always runs all 3 stages regardless of intermediate results.
+     */
+    ClassifyFeatures extract_features(const std::complex<float>* iq, int count, float sample_rate);
 
 private:
     // Stage 1: Spectral Shape
@@ -70,12 +85,17 @@ private:
     // Stage 3: Temporal Rhythm (autocorrelation)
     ClassifyResult stage3_rhythm(const std::complex<float>* iq, int count, float fs);
 
+    // Feature extractors
+    float calc_spectral_entropy(const std::complex<float>* iq, int count, float fs);
+    float calc_peak_stability(const std::complex<float>* iq, int count, float fs);
+
     // Helpers
     float calc_bandwidth(const float* psd_db, const float* freqs, int nbins,
                          float peak_db, float threshold_db);
 
+    MLClassifier* ml_model_ = nullptr;
+
     // Reusable FFTW plans for stage 3
-    // (created lazily based on input size)
     fftwf_plan  acorr_fwd_plan_ = nullptr;
     fftwf_plan  acorr_inv_plan_ = nullptr;
     int         acorr_plan_size_ = 0;

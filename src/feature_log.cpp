@@ -27,9 +27,10 @@ bool FeatureLog::open(const std::string& path) {
     }
 
     if (!exists) {
-        file_ << "timestamp,freq_hz,snr_db,eff_bw,shape_factor,headroom_db,"
-              << "bc,on_off,rhythm_score,wpm,confidence,classified_cw,"
-              << "stage_reached,user_label" << std::endl;
+        file_ << "timestamp,freq_hz,snr_db,effective_bw,shape_factor,headroom_db,"
+              << "bimodality_coeff,on_off_ratio,rhythm_score,wpm_estimate,"
+              << "spectral_entropy,peak_stability,"
+              << "confidence,classified_cw,stage_reached,user_label" << std::endl;
     }
 
     return true;
@@ -52,6 +53,8 @@ void FeatureLog::log(const FeatureRow& row) {
               << row.on_off_ratio << ","
               << row.rhythm_score << ","
               << row.wpm_estimate << ","
+              << row.spectral_entropy << ","
+              << row.peak_stability << ","
               << row.confidence << ","
               << (row.classified_cw ? 1 : 0) << ","
               << row.stage_reached << ","
@@ -72,9 +75,10 @@ void FeatureLog::update_label(double freq_hz, int label) {
             if (file_.is_open()) {
                 file_.close();
                 file_.open(path_, std::ios::trunc);
-                file_ << "timestamp,freq_hz,snr_db,eff_bw,shape_factor,headroom_db,"
-                      << "bc,on_off,rhythm_score,wpm,confidence,classified_cw,"
-                      << "stage_reached,user_label" << std::endl;
+                file_ << "timestamp,freq_hz,snr_db,effective_bw,shape_factor,headroom_db,"
+                      << "bimodality_coeff,on_off_ratio,rhythm_score,wpm_estimate,"
+                      << "spectral_entropy,peak_stability,"
+                      << "confidence,classified_cw,stage_reached,user_label" << std::endl;
                 for (auto& r : rows_) {
                     file_ << std::fixed << std::setprecision(3)
                           << r.timestamp << ","
@@ -87,6 +91,8 @@ void FeatureLog::update_label(double freq_hz, int label) {
                           << r.on_off_ratio << ","
                           << r.rhythm_score << ","
                           << r.wpm_estimate << ","
+                          << r.spectral_entropy << ","
+                          << r.peak_stability << ","
                           << r.confidence << ","
                           << (r.classified_cw ? 1 : 0) << ","
                           << r.stage_reached << ","
@@ -125,10 +131,12 @@ std::vector<FeatureRow> FeatureLog::load(const std::string& path) {
                     case 7: r.on_off_ratio = std::stof(token); break;
                     case 8: r.rhythm_score = std::stof(token); break;
                     case 9: r.wpm_estimate = std::stof(token); break;
-                    case 10: r.confidence = std::stof(token); break;
-                    case 11: r.classified_cw = (std::stoi(token) != 0); break;
-                    case 12: r.stage_reached = std::stoi(token); break;
-                    case 13: r.user_label = std::stoi(token); break;
+                    case 10: r.spectral_entropy = std::stof(token); break;
+                    case 11: r.peak_stability = std::stof(token); break;
+                    case 12: r.confidence = std::stof(token); break;
+                    case 13: r.classified_cw = (std::stoi(token) != 0); break;
+                    case 14: r.stage_reached = std::stoi(token); break;
+                    case 15: r.user_label = std::stoi(token); break;
                 }
             } catch (...) {}
             col++;

@@ -22,6 +22,9 @@ struct FeatureRow {
     // Stage 3
     float  rhythm_score;
     float  wpm_estimate;
+    // ML features
+    float  spectral_entropy;
+    float  peak_stability;
     // Classifier output
     float  confidence;
     bool   classified_cw;

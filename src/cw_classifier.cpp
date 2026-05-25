@@ -1,4 +1,5 @@
 #include "cw_classifier.hpp"
+#include "ml_classifier.hpp"
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -30,6 +31,32 @@ CWClassifier::~CWClassifier() {
 }
 
 // =========================================================================
+// Extract all features (for ML training — always runs all stages)
+// =========================================================================
+ClassifyFeatures CWClassifier::extract_features(const std::complex<float>* iq,
+                                                  int count, float sample_rate) {
+    ClassifyFeatures f;
+    if (count < 32) return f;
+
+    auto r1 = stage1_spectral(iq, count, sample_rate);
+    f.effective_bw = r1.features.effective_bw;
+    f.shape_factor = r1.features.shape_factor;
+    f.headroom_db = r1.features.headroom_db;
+
+    auto r2 = stage2_amplitude(iq, count, sample_rate);
+    f.bimodality_coeff = r2.features.bimodality_coeff;
+    f.on_off_ratio = r2.features.on_off_ratio;
+
+    auto r3 = stage3_rhythm(iq, count, sample_rate);
+    f.rhythm_score = r3.features.rhythm_score;
+
+    f.spectral_entropy = calc_spectral_entropy(iq, count, sample_rate);
+    f.peak_stability = calc_peak_stability(iq, count, sample_rate);
+
+    return f;
+}
+
+// =========================================================================
 // Public entry point
 // =========================================================================
 ClassifyResult CWClassifier::classify(const std::complex<float>* iq, int count,
@@ -38,6 +65,42 @@ ClassifyResult CWClassifier::classify(const std::complex<float>* iq, int count,
         return {SignalType::UNKNOWN, 0.0f, 0, 0.0f, false, "Too few samples"};
     }
 
+    // --- ML model path ---
+    if (ml_model_) {
+        auto features = extract_features(iq, count, sample_rate);
+        auto r3 = stage3_rhythm(iq, count, sample_rate);  // for WPM
+
+        std::vector<float> fvec = {
+            0.0f,  // snr_db — filled in by caller
+            features.effective_bw,
+            features.shape_factor,
+            features.headroom_db,
+            features.bimodality_coeff,
+            features.on_off_ratio,
+            features.rhythm_score,
+            r3.wpm_estimate,
+            features.spectral_entropy,
+            features.peak_stability,
+        };
+
+        float prob = ml_model_->predict(fvec);
+        bool is_cw = prob > 0.5f;
+
+        std::ostringstream verdict;
+        verdict << "ML: prob=" << prob;
+
+        ClassifyResult result;
+        result.signal_class = is_cw ? SignalType::CW : SignalType::UNKNOWN;
+        result.cw_confidence = prob;
+        result.stage_reached = 3;
+        result.wpm_estimate = r3.wpm_estimate;
+        result.is_cw = is_cw;
+        result.verdict = verdict.str();
+        result.features = features;
+        return result;
+    }
+
+    // --- DSP cascade path (fallback when no ML model) ---
     ClassifyFeatures features;
 
     // Stage 1
@@ -60,6 +123,11 @@ ClassifyResult CWClassifier::classify(const std::complex<float>* iq, int count,
     // Stage 3
     auto r3 = stage3_rhythm(iq, count, sample_rate);
     features.rhythm_score = r3.features.rhythm_score;
+
+    // Also compute ML features for logging even without ML model
+    features.spectral_entropy = calc_spectral_entropy(iq, count, sample_rate);
+    features.peak_stability = calc_peak_stability(iq, count, sample_rate);
+
     r3.features = features;
 
     // Combine confidences from all stages
@@ -71,6 +139,115 @@ ClassifyResult CWClassifier::classify(const std::complex<float>* iq, int count,
                          + 0.5f * r3.cw_confidence * 0.3f;
     }
     return r3;
+}
+
+// =========================================================================
+// Spectral Entropy — low for narrow CW, high for noise/voice
+// =========================================================================
+float CWClassifier::calc_spectral_entropy(const std::complex<float>* iq,
+                                            int count, float fs) {
+    int nfft = 256;
+    if (count < nfft) nfft = count;
+
+    // Compute magnitude spectrum
+    fftwf_complex* fin  = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * nfft);
+    fftwf_complex* fout = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * nfft);
+
+    for (int i = 0; i < nfft; i++) {
+        fin[i][0] = iq[i].real();
+        fin[i][1] = iq[i].imag();
+    }
+
+    fftwf_plan plan = fftwf_plan_dft_1d(nfft, fin, fout, FFTW_FORWARD, FFTW_ESTIMATE);
+    fftwf_execute(plan);
+    fftwf_destroy_plan(plan);
+
+    // Compute power spectrum and normalize to probability distribution
+    float total = 0.0f;
+    std::vector<float> power(nfft);
+    for (int i = 0; i < nfft; i++) {
+        power[i] = fout[i][0]*fout[i][0] + fout[i][1]*fout[i][1];
+        total += power[i];
+    }
+
+    fftwf_free(fin);
+    fftwf_free(fout);
+
+    if (total < 1e-12f) return 0.0f;
+
+    float entropy = 0.0f;
+    for (int i = 0; i < nfft; i++) {
+        float p = power[i] / total;
+        if (p > 1e-12f) {
+            entropy -= p * std::log2(p);
+        }
+    }
+
+    // Normalize to [0, 1] range (max entropy = log2(nfft))
+    float max_entropy = std::log2(static_cast<float>(nfft));
+    return (max_entropy > 0) ? entropy / max_entropy : 0.0f;
+}
+
+// =========================================================================
+// Peak Stability — variance of peak frequency across sub-windows
+// Low for stable CW carrier, high for drifting/noisy signals
+// =========================================================================
+float CWClassifier::calc_peak_stability(const std::complex<float>* iq,
+                                          int count, float fs) {
+    int win_size = 128;
+    int n_windows = count / win_size;
+    if (n_windows < 2) return 1.0f;  // can't measure stability
+
+    std::vector<float> peak_freqs;
+
+    for (int w = 0; w < n_windows; w++) {
+        const auto* seg = iq + w * win_size;
+
+        fftwf_complex* fin  = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * win_size);
+        fftwf_complex* fout = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * win_size);
+
+        for (int i = 0; i < win_size; i++) {
+            fin[i][0] = seg[i].real();
+            fin[i][1] = seg[i].imag();
+        }
+
+        fftwf_plan plan = fftwf_plan_dft_1d(win_size, fin, fout, FFTW_FORWARD, FFTW_ESTIMATE);
+        fftwf_execute(plan);
+        fftwf_destroy_plan(plan);
+
+        int peak_bin = 0;
+        float peak_mag = 0.0f;
+        for (int i = 0; i < win_size; i++) {
+            float mag = fout[i][0]*fout[i][0] + fout[i][1]*fout[i][1];
+            if (mag > peak_mag) {
+                peak_mag = mag;
+                peak_bin = i;
+            }
+        }
+
+        fftwf_free(fin);
+        fftwf_free(fout);
+
+        float peak_hz = (peak_bin > win_size / 2)
+            ? (peak_bin - win_size) * fs / win_size
+            : peak_bin * fs / win_size;
+        peak_freqs.push_back(peak_hz);
+    }
+
+    // Compute coefficient of variation of peak frequencies
+    float mean = 0.0f;
+    for (auto f : peak_freqs) mean += f;
+    mean /= peak_freqs.size();
+
+    float var = 0.0f;
+    for (auto f : peak_freqs) var += (f - mean) * (f - mean);
+    var /= peak_freqs.size();
+
+    float std_dev = std::sqrt(var);
+    float bandwidth = fs;
+
+    // Normalize: 0 = perfectly stable, 1 = all over the place
+    return std::min(1.0f, std_dev / (bandwidth * 0.1f));
 }
 
 // =========================================================================

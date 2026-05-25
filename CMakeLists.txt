@@ -44,6 +44,7 @@ add_executable(cwiden
     src/hackrf_source.cpp
     src/channelizer.cpp
     src/cw_classifier.cpp
+    src/ml_classifier.cpp
     src/signal_tracker.cpp
     src/audio_output.cpp
     src/feature_log.cpp
@@ -74,6 +75,7 @@ enable_testing()
 add_executable(test_classifier
     test/test_classifier.cpp
     src/cw_classifier.cpp
+    src/ml_classifier.cpp
     src/channelizer.cpp
 )
 

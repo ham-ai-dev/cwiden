@@ -32,6 +32,7 @@
 #include "audio_output.hpp"
 #include "feature_log.hpp"
 #include "band_plan.hpp"
+#include "ml_classifier.hpp"
 #include "tui.hpp"
 
 std::atomic<bool> g_running{true};
@@ -298,6 +299,15 @@ int main(int argc, char** argv) {
     CWClassifier classifier;
     SignalTracker tracker;
 
+    // Load ML model if available
+    MLClassifier ml_model;
+    if (ml_model.load("model.json")) {
+        classifier.set_ml_model(&ml_model);
+        std::cerr << "cwiden: Using ML model for classification" << std::endl;
+    } else {
+        std::cerr << "cwiden: No model.json found, using DSP thresholds" << std::endl;
+    }
+
     // TUI setup
     if (tui_mode) {
         // Set up band presets
@@ -470,6 +480,8 @@ int main(int argc, char** argv) {
                         row.on_off_ratio = result.features.on_off_ratio;
                         row.rhythm_score = result.features.rhythm_score;
                         row.wpm_estimate = result.wpm_estimate;
+                        row.spectral_entropy = result.features.spectral_entropy;
+                        row.peak_stability = result.features.peak_stability;
                         row.confidence = result.cw_confidence;
                         row.classified_cw = result.is_cw;
                         row.stage_reached = result.stage_reached;
