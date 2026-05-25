@@ -280,6 +280,15 @@ int main(int argc, char** argv) {
     auto ring_buf = std::make_shared<RingBuffer<std::complex<float>>>(1 << 20);
     HackRFSource hackrf(ring_buf);
 
+    // Apply band preset to center_freq before HackRF init
+    {
+        auto bp = find_band(start_band);
+        if (bp) {
+            center_freq = bp->center_hz;
+            sample_rate = bp->sample_rate;
+        }
+    }
+
     if (!hackrf.init(center_freq, sample_rate, lna_gain, vga_gain)) {
         std::cerr << "ERROR: Failed to initialize HackRF" << std::endl;
         return 1;
@@ -401,7 +410,7 @@ int main(int argc, char** argv) {
     std::thread pipeline_thread([&] {
         std::vector<std::complex<float>> iq_batch(8192);
         std::vector<std::complex<float>> accumulator;
-        int chunk_size = sample_rate * 2;
+        int chunk_size = sample_rate * 4;  // 4 seconds for better rhythm detection
         accumulator.reserve(chunk_size + 8192);
 
         while (g_running) {
