@@ -32,6 +32,10 @@ if(NOT HACKRF_INCLUDE_DIR OR NOT HACKRF_LIBRARY)
         "  sudo apt install libhackrf-dev")
 endif()
 
+# ONNX Runtime (system install)
+find_package(onnxruntime CONFIG REQUIRED)
+message(STATUS "ONNX Runtime: found")
+
 message(STATUS "FFTW3F: ${FFTW3F_LIBRARIES}")
 message(STATUS "HackRF include: ${HACKRF_INCLUDE_DIR}")
 message(STATUS "HackRF library: ${HACKRF_LIBRARY}")
@@ -63,6 +67,7 @@ target_link_libraries(cwiden PRIVATE
     ftxui::component
     ${HACKRF_LIBRARY}
     ${FFTW3F_LIBRARIES}
+    onnxruntime::onnxruntime
     pthread
     m
 )
@@ -86,6 +91,7 @@ target_include_directories(test_classifier PRIVATE
 
 target_link_libraries(test_classifier PRIVATE
     ${FFTW3F_LIBRARIES}
+    onnxruntime::onnxruntime
     pthread
     m
 )

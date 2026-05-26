@@ -1,70 +1,79 @@
 #pragma once
 /**
- * ml_classifier.hpp — Lightweight ML model inference for CW classification.
+ * ml_classifier.hpp — ONNX-based CNN inference for CW classification.
  *
- * Loads a gradient-boosted tree ensemble from model.json (produced by
- * scripts/train_model.py) and runs inference in pure C++.
- * No Python/sklearn dependency at runtime.
+ * Loads a trained signal_classifier.onnx model (from deep-classifier)
+ * and runs inference on spectrograms computed from raw IQ data.
+ *
+ * Pipeline: IQ → spectrogram (NFFT=64, HOP=16) → normalize → CNN → softmax
  */
 
 #include <string>
 #include <vector>
+#include <complex>
+#include <memory>
+
+// Forward declare ORT types to avoid leaking headers
+namespace Ort {
+    struct Env;
+    struct Session;
+    struct SessionOptions;
+    struct MemoryInfo;
+}
 
 class MLClassifier {
 public:
     MLClassifier();
     ~MLClassifier();
 
-    /** Load model from JSON file. Returns true on success. */
-    bool load(const std::string& path);
+    // Non-copyable (ORT session is not copyable)
+    MLClassifier(const MLClassifier&) = delete;
+    MLClassifier& operator=(const MLClassifier&) = delete;
+
+    /** Load ONNX model. Returns true on success. */
+    bool load(const std::string& onnx_path);
 
     /** Is a model loaded and ready? */
     bool is_loaded() const { return loaded_; }
 
-    /** Number of training samples used. */
-    int training_samples() const { return n_samples_; }
-    float training_accuracy() const { return train_accuracy_; }
+    /**
+     * Classify narrowband IQ data.
+     *
+     * @param iq         Narrowband baseband IQ samples
+     * @param count      Number of IQ samples
+     * @param sample_rate Sample rate of the IQ data (Hz)
+     * @return CW probability (0.0 = noise, 1.0 = CW)
+     */
+    float predict_iq(const std::complex<float>* iq, int count, float sample_rate);
 
     /**
-     * Predict CW probability from feature vector.
-     *
-     * @param features  Vector of features in standard order:
-     *   [snr_db, effective_bw, shape_factor, headroom_db,
-     *    bimodality_coeff, on_off_ratio, rhythm_score, wpm_estimate,
-     *    spectral_entropy, peak_stability]
-     * @return Probability of CW (0.0 to 1.0)
+     * Legacy interface: predict from pre-computed feature vector.
+     * Falls back to 0.5 (no-op) since CNN doesn't use hand-crafted features.
      */
     float predict(const std::vector<float>& features) const;
 
-    /** Feature names expected by this model. */
-    const std::vector<std::string>& feature_names() const { return feature_names_; }
-
-    /** Feature importance scores (same order as feature_names). */
-    const std::vector<float>& feature_importances() const { return importances_; }
-
-    struct TreeNode {
-        bool is_leaf = false;
-        float leaf_value = 0.0f;
-        int feature_idx = -1;
-        float threshold = 0.0f;
-        int left_child = -1;
-        int right_child = -1;
-    };
-
-    struct Tree {
-        std::vector<TreeNode> nodes;
-    };
+    /** Model metadata */
+    int n_classes() const { return n_classes_; }
+    const std::vector<std::string>& class_names() const { return class_names_; }
 
 private:
-
-    float traverse_tree(const Tree& tree, const std::vector<float>& features) const;
+    /**
+     * Compute spectrogram from IQ data.
+     * Returns a flat vector in [freq_bins × time_frames] layout.
+     */
+    std::vector<float> compute_spectrogram(const std::complex<float>* iq, int count,
+                                           float sample_rate);
 
     bool loaded_ = false;
-    float learning_rate_ = 0.1f;
-    float init_raw_ = 0.0f;  // initial log-odds prediction
-    std::vector<Tree> trees_;
-    std::vector<std::string> feature_names_;
-    std::vector<float> importances_;
-    int n_samples_ = 0;
-    float train_accuracy_ = 0.0f;
+    int n_classes_ = 2;
+    std::vector<std::string> class_names_ = {"CW", "NOISE"};
+
+    // Spectrogram parameters (must match training)
+    int nfft_ = 64;
+    int hop_ = 16;
+    int target_time_frames_ = 256;
+
+    // ONNX Runtime internals (opaque pointers to avoid header leakage)
+    struct OrtState;
+    std::unique_ptr<OrtState> ort_;
 };

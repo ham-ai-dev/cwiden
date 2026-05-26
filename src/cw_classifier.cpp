@@ -65,32 +65,23 @@ ClassifyResult CWClassifier::classify(const std::complex<float>* iq, int count,
         return {SignalType::UNKNOWN, 0.0f, 0, 0.0f, false, "Too few samples"};
     }
 
-    // --- ML model path ---
+    // --- ML model path (CNN via ONNX) ---
     if (ml_model_) {
-        auto features = extract_features(iq, count, sample_rate);
-        auto r3 = stage3_rhythm(iq, count, sample_rate);  // for WPM
-
-        std::vector<float> fvec = {
-            0.0f,  // snr_db — filled in by caller
-            features.effective_bw,
-            features.shape_factor,
-            features.headroom_db,
-            features.bimodality_coeff,
-            features.on_off_ratio,
-            features.rhythm_score,
-            r3.wpm_estimate,
-            features.spectral_entropy,
-            features.peak_stability,
-        };
-
-        float prob = ml_model_->predict(fvec);
+        // CNN classifies directly from raw IQ spectrogram
+        float prob = ml_model_->predict_iq(iq, count, sample_rate);
         bool is_cw = prob > 0.5f;
 
+        // Still run DSP Stage 3 for WPM estimate (CNN doesn't provide this)
+        auto r3 = stage3_rhythm(iq, count, sample_rate);
+
+        // Extract DSP features for logging/display
+        auto features = extract_features(iq, count, sample_rate);
+
         std::ostringstream verdict;
-        verdict << "ML: prob=" << prob;
+        verdict << "CNN: cw_prob=" << prob;
 
         ClassifyResult result;
-        result.signal_class = is_cw ? SignalType::CW : SignalType::UNKNOWN;
+        result.signal_class = is_cw ? SignalType::CW : SignalType::NOISE;
         result.cw_confidence = prob;
         result.stage_reached = 3;
         result.wpm_estimate = r3.wpm_estimate;

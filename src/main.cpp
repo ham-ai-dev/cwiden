@@ -303,13 +303,13 @@ int main(int argc, char** argv) {
     CWClassifier classifier;
     SignalTracker tracker;
 
-    // Load ML model if available
+    // Load CNN model (ONNX) if available
     MLClassifier ml_model;
-    if (ml_model.load("model.json")) {
+    if (ml_model.load("signal_classifier.onnx")) {
         classifier.set_ml_model(&ml_model);
-        std::cerr << "cwiden: Using ML model for classification" << std::endl;
+        std::cerr << "cwiden: Using CNN classifier (ONNX)" << std::endl;
     } else {
-        std::cerr << "cwiden: No model.json found, using DSP thresholds" << std::endl;
+        std::cerr << "cwiden: No signal_classifier.onnx found, using DSP thresholds" << std::endl;
     }
 
     // TUI setup
