@@ -180,8 +180,36 @@ float MLClassifier::predict_iq(const std::complex<float>* iq, int count,
                                 float sample_rate) {
     if (!loaded_ || !ort_ || !ort_->session) return 0.5f;
 
-    // Compute spectrogram
-    auto spec = compute_spectrogram(iq, count, sample_rate);
+    // The CNN was trained on 1000 Hz sample rate IQ.
+    // cwiden's channelizer may output at a different rate (e.g. 200 Hz).
+    // Resample to training rate if needed.
+    const float training_sr = 1000.0f;
+    const std::complex<float>* iq_for_spec = iq;
+    int count_for_spec = count;
+    std::vector<std::complex<float>> resampled;
+
+    if (std::abs(sample_rate - training_sr) > 1.0f && sample_rate > 0.0f) {
+        float ratio = training_sr / sample_rate;
+        int new_count = static_cast<int>(count * ratio);
+        resampled.resize(new_count);
+
+        // Linear interpolation resampling
+        for (int i = 0; i < new_count; i++) {
+            float src_pos = i / ratio;
+            int idx = static_cast<int>(src_pos);
+            float frac = src_pos - idx;
+            if (idx + 1 < count) {
+                resampled[i] = iq[idx] * (1.0f - frac) + iq[idx + 1] * frac;
+            } else if (idx < count) {
+                resampled[i] = iq[idx];
+            }
+        }
+        iq_for_spec = resampled.data();
+        count_for_spec = new_count;
+    }
+
+    // Compute spectrogram at training sample rate
+    auto spec = compute_spectrogram(iq_for_spec, count_for_spec, training_sr);
 
     // Shape: [1, 1, nfft_, target_time_frames_]
     std::array<int64_t, 4> shape = {1, 1, nfft_, target_time_frames_};
