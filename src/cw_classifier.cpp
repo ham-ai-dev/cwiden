@@ -65,20 +65,46 @@ ClassifyResult CWClassifier::classify(const std::complex<float>* iq, int count,
         return {SignalType::UNKNOWN, 0.0f, 0, 0.0f, false, "Too few samples"};
     }
 
-    // --- ML model path (CNN via ONNX) ---
+    // --- Hybrid path: DSP pre-filter + CNN classifier ---
     if (ml_model_) {
-        // CNN classifies directly from raw IQ spectrogram
-        float prob = ml_model_->predict_iq(iq, count, sample_rate);
-        bool is_cw = prob > 0.5f;
+        // Stage 1: Spectral shape — fast-exit for SSB, RTTY, CARRIER
+        auto r1 = stage1_spectral(iq, count, sample_rate);
+        if (!r1.is_cw) {
+            // DSP rejected it definitively — trust that, skip CNN
+            r1.features.effective_bw = r1.features.effective_bw;
+            return r1;
+        }
 
-        // Still run DSP Stage 3 for WPM estimate (CNN doesn't provide this)
+        // Stage 2: Amplitude pattern — fast-exit for carriers, flat signals
+        auto r2 = stage2_amplitude(iq, count, sample_rate);
+        if (!r2.is_cw && r2.cw_confidence < 0.2f) {
+            // Strong DSP rejection (carrier, flat noise)
+            r2.features.effective_bw = r1.features.effective_bw;
+            r2.features.shape_factor = r1.features.shape_factor;
+            r2.features.headroom_db = r1.features.headroom_db;
+            return r2;
+        }
+
+        // Survived DSP pre-filter — now run CNN for final CW vs NOISE
+        float prob = ml_model_->predict_iq(iq, count, sample_rate);
+        bool is_cw = prob > 0.70f;  // higher threshold to reduce false positives
+
+        // DSP Stage 3 for WPM estimate
         auto r3 = stage3_rhythm(iq, count, sample_rate);
 
-        // Extract DSP features for logging/display
-        auto features = extract_features(iq, count, sample_rate);
+        // Collect features for logging
+        ClassifyFeatures features;
+        features.effective_bw = r1.features.effective_bw;
+        features.shape_factor = r1.features.shape_factor;
+        features.headroom_db = r1.features.headroom_db;
+        features.bimodality_coeff = r2.features.bimodality_coeff;
+        features.on_off_ratio = r2.features.on_off_ratio;
+        features.rhythm_score = r3.features.rhythm_score;
 
         std::ostringstream verdict;
-        verdict << "CNN: cw_prob=" << prob;
+        verdict << "CNN: cw_prob=" << prob
+                << " S1:bw=" << static_cast<int>(features.effective_bw)
+                << " S2:bc=" << features.bimodality_coeff;
 
         ClassifyResult result;
         result.signal_class = is_cw ? SignalType::CW : SignalType::NOISE;
