@@ -241,7 +241,7 @@ void Tui::run() {
             });
 
             if (is_selected) {
-                row = row | bgcolor(Color::GrayDark);
+                row = row | bgcolor(Color::GrayDark) | focus;
             }
             rows.push_back(row);
         }
@@ -250,16 +250,20 @@ void Tui::run() {
             rows.push_back(text("  No CW signals in band") | dim | center);
         }
 
-        // Band name in panel title
+        // Band name + signal count in panel title
         std::string band_label;
         if (selected_band_ >= 0 && selected_band_ < static_cast<int>(bands_.size())) {
             auto& b = bands_[selected_band_];
-            char buf[64];
-            snprintf(buf, sizeof(buf), " %s CW: %.0f-%.0f kHz ",
-                     b.name.c_str(), b.cw_lo_hz/1000, b.cw_hi_hz/1000);
+            char buf[80];
+            snprintf(buf, sizeof(buf), " %s CW: %.0f-%.0f kHz [%d signals] ",
+                     b.name.c_str(), b.cw_lo_hz/1000, b.cw_hi_hz/1000,
+                     static_cast<int>(visible_indices.size()));
             band_label = buf;
         } else {
-            band_label = " CW Signals ";
+            char buf[32];
+            snprintf(buf, sizeof(buf), " CW Signals [%d] ",
+                     static_cast<int>(visible_indices.size()));
+            band_label = buf;
         }
 
         Element signal_panel;
@@ -312,10 +316,10 @@ void Tui::run() {
                 scan_rows | flex
             ) | flex;
         } else {
-            // === Normal signal list ===
+            // === Normal signal list with scrolling ===
             auto signal_panel_inner = window(
                 text(band_label) | bold | color(Color::Cyan),
-                vbox(std::move(rows)) | flex
+                vbox(std::move(rows)) | vscroll_indicator | yframe | flex
             ) | flex;
             signal_panel = signal_panel_inner;
         }
