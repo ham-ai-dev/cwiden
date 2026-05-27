@@ -120,6 +120,7 @@ private:
     static bool                        validation_mode_;
     static int                         labels_positive_;
     static int                         labels_negative_;
+    static int                         labels_unknown_;
 
     // Audio device picker
     static std::vector<DeviceInfo>     audio_devices_;
@@ -135,4 +136,5 @@ private:
     static ScanPlayCallback            scan_play_cb_;
     static int                         scan_labels_cw_;
     static int                         scan_labels_noise_;
+    static int                         scan_labels_unknown_;
 };

@@ -49,6 +49,7 @@ std::string                 Tui::status_msg_ = "Select a band to start";
 bool                        Tui::validation_mode_ = false;
 int                         Tui::labels_positive_ = 0;
 int                         Tui::labels_negative_ = 0;
+int                         Tui::labels_unknown_ = 0;
 std::vector<Tui::DeviceInfo> Tui::audio_devices_;
 int                         Tui::selected_device_ = 0;
 int                         Tui::focus_panel_ = 1; // start on bands
@@ -60,6 +61,7 @@ double                      Tui::scan_step_ = 200;     // 200 Hz steps
 Tui::ScanPlayCallback       Tui::scan_play_cb_;
 int                         Tui::scan_labels_cw_ = 0;
 int                         Tui::scan_labels_noise_ = 0;
+int                         Tui::scan_labels_unknown_ = 0;
 
 static std::string format_freq(double hz) {
     char buf[32];
@@ -305,9 +307,11 @@ void Tui::run() {
                 text("") | size(HEIGHT, EQUAL, 1),
                 hbox({
                     text("  Labels: "),
-                    text("+" + std::to_string(scan_labels_cw_)) | color(Color::Green),
-                    text(" / "),
-                    text("-" + std::to_string(scan_labels_noise_)) | color(Color::Red),
+                    text("CW:" + std::to_string(scan_labels_cw_)) | color(Color::Green),
+                    text(" "),
+                    text("N:" + std::to_string(scan_labels_noise_)) | color(Color::Red),
+                    text(" "),
+                    text("?:" + std::to_string(scan_labels_unknown_)) | color(Color::Yellow),
                 }) | center,
             });
 
@@ -444,13 +448,17 @@ void Tui::run() {
                         ? vbox({
                             text(" F    Scan mode") | bold | color(scan_mode_ ? Color::Yellow : Color::White),
                             text(scan_mode_ ? " </>  Tune freq" : " Space Listen") | bold,
-                            text(" Y/N  Label") | bold,
+                            text(" Y    CW") | bold | color(Color::Green),
+                            text(" N    Noise") | bold | color(Color::Red),
+                            text(" U    Unknown") | bold | color(Color::Yellow),
                             text(" T    Test tone") | dim,
                             hbox({
-                                text(" +") | color(Color::Green),
+                                text(" CW:") | color(Color::Green),
                                 text(std::to_string(labels_positive_ + scan_labels_cw_)),
-                                text(" -") | color(Color::Red),
+                                text(" N:") | color(Color::Red),
                                 text(std::to_string(labels_negative_ + scan_labels_noise_)),
+                                text(" ?:") | color(Color::Yellow),
+                                text(std::to_string(labels_unknown_ + scan_labels_unknown_)),
                             }),
                         })
                         : text("") | nothing,
@@ -613,7 +621,18 @@ void Tui::run() {
                 if (validation_cb_) validation_cb_(scan_freq_, 0);
                 scan_labels_noise_++;
                 char buf[64];
-                snprintf(buf, sizeof(buf), "NOT CW: %.3f kHz", scan_freq_ / 1000.0);
+                snprintf(buf, sizeof(buf), "NOISE: %.3f kHz", scan_freq_ / 1000.0);
+                status_msg_ = buf;
+                // Auto-advance to next frequency
+                scan_freq_ += scan_step_;
+                if (scan_freq_ > cw_filter_hi_) scan_freq_ = cw_filter_hi_;
+                return true;
+            }
+            if (event == Event::Character('u') || event == Event::Character('U')) {
+                if (validation_cb_) validation_cb_(scan_freq_, 2);
+                scan_labels_unknown_++;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "UNKNOWN: %.3f kHz", scan_freq_ / 1000.0);
                 status_msg_ = buf;
                 // Auto-advance to next frequency
                 scan_freq_ += scan_step_;
@@ -703,7 +722,25 @@ void Tui::run() {
                             if (validation_cb_) validation_cb_(s.freq_hz, 0);
                             labels_negative_++;
                             char buf[64];
-                            snprintf(buf, sizeof(buf), "NOT CW: %.3f kHz", s.freq_hz / 1000.0);
+                            snprintf(buf, sizeof(buf), "NOISE: %.3f kHz", s.freq_hz / 1000.0);
+                            status_msg_ = buf;
+                            break;
+                        }
+                        vi++;
+                    }
+                }
+                return true;
+            }
+            if (event == Event::Character('u') || event == Event::Character('U')) {
+                int vi = 0;
+                for (auto& s : signals_) {
+                    if ((s.state == TrackState::TENTATIVE || s.state == TrackState::ACTIVE) &&
+                        s.freq_hz >= cw_filter_lo_ && s.freq_hz <= cw_filter_hi_) {
+                        if (vi == selected_signal_) {
+                            if (validation_cb_) validation_cb_(s.freq_hz, 2);
+                            labels_unknown_++;
+                            char buf[64];
+                            snprintf(buf, sizeof(buf), "UNKNOWN: %.3f kHz", s.freq_hz / 1000.0);
                             status_msg_ = buf;
                             break;
                         }
